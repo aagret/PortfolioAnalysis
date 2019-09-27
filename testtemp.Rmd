@@ -1,0 +1,243 @@
+---
+title: "Untitled"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+    
+header-includes:
+    \AtBeginDocument{\let\maketitle\relax}
+
+
+---
+
+```{r start, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+```{r setup, include=FALSE}
+library(Rblpapi)
+library(TTR)
+library(PerformanceAnalytics)
+library(PortfolioAnalytics)
+library(xtable)
+
+# define Bloomberg tickers
+
+tickers <- c(".DSTRAT Index", "TFCFR1E LX Equity", "MLAQSEI ID Equity",
+             "TBWLSIE ID Equity", "BLWEERE ID Equity",
+             "SXXR Index", "SPTR500N Index", "SPTRNE Index", "SPXUXEN Index",
+             "EECBDEPO Index", "FDFD Index")
+
+
+# define study periods
+periods <- c(as.Date("2018-12-31"), as.Date("2018-02-27"), as.Date("2016-08-09"))
+
+
+# connect to Bloomberg and download datas
+opt <- c("periodicitySelection"="DAILY",
+         "nonTradingDayFillOption"="ACTIVE_DAYS_ONLY",
+         "nonTradingDayFillMethod"="PREVIOUS_VALUE")
+
+con <- blpConnect()
+
+prices <- bdh(tickers, "PX_LAST", min(periods), options = opt)
+
+blpDisconnect(con)
+
+
+# tidy data to xts and carry froward missing values
+prices <- lapply(prices, function(x) xts(x[,2], x[,1]))
+prices <- do.call(merge, prices)
+prices <- na.locf(prices)
+
+# rename columns
+colnames(prices) <- c("SPhEur", "EuOn", "UsOn", "Dharma", "Q-Cap", "Quest", 
+                      "Trium", "Black", "Stoxx", "SP", "SPEur")
+
+# calc Interest rates Indexes
+days= c(0, diff(.indexDate(prices)))
+
+prices$UsOnIdx <- 1 + (lag(prices$UsOn, 1) * days / 25200)
+prices$EuOnIdx <-  1 + (lag(prices$EuOn, 1) * days / 25200)
+
+prices$UsOnIdx[1] <- 1
+prices$EuOnIdx[1] <- 1
+
+prices$UsOnIdx <- cumprod(prices$UsOnIdx)
+prices$EuOnIdx <- cumprod(prices$EuOnIdx)
+
+# reorder columns
+prices <- prices[, c(4:11, 1, 12, 13, 2 ,3 )]
+
+# calc returns ad carry forward
+returns <- ROC(prices[,1:11])
+returns[1,] <- 0
+returns <- na.locf(returns)
+
+# plot rates indexes
+plot(exp(cumsum(returns$EuOnIdx))-1)
+plot(exp(cumsum(returns$UsOnIdx))-1)
+
+
+
+
+per <- 1
+per <- periods[per]
+per <- paste(per,"/")
+
+mainIdx  <- returns[paste(periods[1],"/"), "Dharma"]
+allIdx   <- returns[paste(periods[1],"/"), 1:9]
+oneBench <- returns[paste(periods[1],"/"), 6]
+twoBench <- returns[paste(periods[1],"/"), c(6, 8)]
+riskFree <- prices [paste(periods[1],"/"), "EuOn"] / 25200
+
+
+```
+
+
+```{r test, results='asis', echo = FALSE, message = FALSE}
+
+titre <- paste("Performance Analysis form: ",  gsub(" /","",per), " to: ", last(index(prices)))
+
+
+print(
+    xtable(
+        rbind(
+            
+            data.frame(last(exp(cumsum(allIdx)) - 1, 1), row.names = "Total Return"),
+
+            table.AnnualizedReturns(allIdx,
+                                    riskFree,
+                                    scale= 252),
+            
+            table.Arbitrary(allIdx,
+                            metrics= c("mean", "sd")),
+            
+            SharpeRatio(allIdx, 
+                        riskFree,
+                        p=0.95),
+            
+            MeanAbsoluteDeviation(allIdx),
+            
+            MSquared(allIdx, oneBench),
+            
+            MSquaredExcess(allIdx, oneBench))
+            
+        ),
+        
+        type= "latex",
+        caption= titre,
+        digits=4,
+        align="|l|rrrrr|r|rrr|"),
+    
+    comment = FALSE,
+    scalebox= 0.9)
+
+    
+
+print(
+    xtable(
+        rbind(
+            
+            
+            
+            
+            # t(table.CaptureRatios(allIdx,  oneBench)),
+            
+            
+            
+            table.Distributions(allIdx),
+            
+            table.DownsideRisk(allIdx,
+                               ci=0.95, scale=252, p=0.99, 
+                               MAR = 0.05/252,
+                               Rf=riskFree),
+            
+            table.DrawdownsRatio(allIdx,
+                                 Rf=mean(riskFree),
+                                 scale=252),
+            
+            
+            
+            
+            table.InformationRatio(allIdx,
+                                   Rb=oneBench,
+                                   scale=252),
+            
+            table.RollingPeriods(allIdx, 
+                                 periods=c(20,50,200)),
+            
+            table.SpecificRisk(allIdx,
+                               oneBench,
+                               Rf=mean(riskFree)),
+            
+            table.Stats(allIdx,
+                        ci=0.95),
+            
+            table.Variability(allIdx),
+            
+            VolatilitySkewness(allIdx),
+            
+            TotalRisk(allIdx,
+                      oneBench,
+                      Rf=riskFree),
+            
+            TrackingError(allIdx,
+                          oneBench),
+            
+            VaR(allIdx, p=0.95)
+            
+            
+            # table.Autocorrelation(allIdx)
+        ),
+        
+        type= "latex",
+        digits=4,
+        align="|l|rrrrr|r|rrr|"),
+    
+    comment = FALSE,
+    scalebox= 0.8)
+
+
+
+print(
+    xtable(
+        rbind(
+            table.SFM(allIdx,
+                      oneBench,
+                      Rf=riskFree,
+                      scale=252),
+            
+            t(table.UpDownRatios(allIdx, oneBench)),
+            
+            t(table.Correlation( allIdx, oneBench)),
+            
+            table.HigherMoments(allIdx,
+                                Rb=oneBench,
+                                Rf=riskFree,
+                                scale=252,
+                                method="moment")
+        ),
+        type= "latex",
+        digits=4,
+        align="|l|rrrrr|r|rrr|"),
+    
+    comment = FALSE,
+    scalebox= 0.6)
+
+
+
+# #others
+# table.CalendarReturns(returns[paste(periods[3],"/"), 1], digit=4)
+# table.Drawdowns(allIdx,
+#                 top=5, digits=4)
+# table.ProbOutPerformance(mainIdx,
+#                          oneBench,
+#                          period_length=c(1,30,200))
+
+```
+
